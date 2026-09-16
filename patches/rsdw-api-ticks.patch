@@ -1,0 +1,914 @@
+diff --git a/.gitignore b/.gitignore
+index 9ba428e..de63043 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -3,4 +3,8 @@ build/
+ .xmake/
+ src/**/*.o
+ src/*.o
+-RSDWSDK/
+\ No newline at end of file
++src/**/*.d
++src/*.d
++core
++core.*
++RSDWSDK/
+diff --git a/Makefile b/Makefile
+index 7564783..12764e5 100644
+--- a/Makefile
++++ b/Makefile
+@@ -22,6 +22,7 @@ SRC := src/rsdwapi.cpp \
+        src/discord/webhook.cpp \
+        src/engine/native_call.cpp \
+        src/engine/process_event.cpp \
++       src/engine/tick_metrics.cpp \
+        src/engine/server.cpp \
+        src/http/http_server.cpp \
+        src/net/access_control.cpp \
+@@ -38,12 +39,21 @@ all: $(OUT)
+ 
+ $(OUT): $(OBJ)
+ 	@mkdir -p dist
+-	$(CXX) $(OBJ) -o $@ $(LDFLAGS)
++	$(CXX) $(OBJ) -o $@ $(LDFLAGS) -Wl,-z,nodelete
+ 
+ %.o: %.cpp
+-	$(CXX) $(CXXFLAGS) -c $< -o $@
++	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
++
++-include $(OBJ:.o=.d)
++
++build/tick_metrics_test: tests/tick_metrics_test.cpp src/engine/tick_metrics.cpp src/engine/tick_metrics.h src/api/system_routes.cpp src/runtime.cpp
++	@mkdir -p build
++	$(CXX) $(CXXFLAGS) -UNDEBUG tests/tick_metrics_test.cpp src/runtime.cpp -o $@ -pthread -ldl
++
++test: build/tick_metrics_test
++	ulimit -c 0; ./build/tick_metrics_test
+ 
+ clean:
+-	rm -f $(OBJ) $(OUT)
++	rm -f $(OBJ) $(OBJ:.o=.d) $(OUT) build/tick_metrics_test
+ 
+-.PHONY: all clean
++.PHONY: all clean test
+diff --git a/README.md b/README.md
+index 79c75b0..c3687df 100644
+--- a/README.md
++++ b/README.md
+@@ -292,6 +292,80 @@ Rate limiting is a per-address token bucket: `CommandsPerMinute` is the sustaine
+ inside `FailWindowSeconds` refuse that address for `BanSeconds`, enforced at `accept`
+ before the password is read.
+ 
++## Tick metrics
++
++`GET /api/metrics` uses the existing REST bearer-token and IP access controls and
++returns HTTP 200 for metric availability states. Example values below are synthetic:
++
++```json
++{
++  "schemaVersion": 1,
++  "tick": {
++    "status": "ready",
++    "source": "engine_tick_hook",
++    "scope": "UDomGameEngine::Tick",
++    "reason": "",
++    "windowSeconds": 1,
++    "sampleCount": 5,
++    "lastSampleAgeSeconds": 0.25,
++    "observedAtUnixMs": 1800000001000,
++    "rateHz": 5,
++    "executionMs": {"p50": 3, "p95": 100, "p99": 100}
++  }
++}
++```
++
++All numeric fields inside `tick` are null unless `status` is `ready`.
++Other statuses are `starting`, `warming`, `unsupported`, `stale`, `faulted`, and
++`stopped`; `reason` explains the state. Engine readiness gates publication only.
++The producer installs synchronously in the preload constructor before the API's
++initialization thread, without waiting for players, RPCs, or API requests.
++
++Execution means monotonic elapsed wall time inside the entire original
++`UDomGameEngine::Tick` invocation. This includes its pre/post delegates and nested
++base/world work, including normal return through a tail call. It excludes work
++outside this call in FEngineLoop and asynchronous work that outlives its return.
++The original receives unchanged arguments exactly once, even when sampling stops.
++
++Select completed ticks from a ten-second lookback, keeping the immediately
++preceding completion as the anchor. During startup the first completion becomes
++the anchor. With N subsequent records, cadence is N divided by the elapsed time
++between anchor and last completion. `windowSeconds` reports that actual interval,
++which can exceed ten seconds after a long tick. At least one second of coverage
++and one record after the anchor are required. Percentiles use exactly those N
++durations and the nearest-rank definition. A freshly completed long tick is
++included even if it began before the lookback. There is no clipping or sampling
++of only the most recently visible engine timing scalar.
++
++Storage is 8,192 records plus an eviction anchor. Eviction of still-needed records
++makes metrics unavailable until a complete window can be formed; ordinary wrap
++of old records is harmless. More than two seconds without a completion is stale.
++An in-flight tick has no known complete duration. `observedAtUnixMs` is Unix epoch
++milliseconds captured for the latest completed sample, not the HTTP response
++time. `lastSampleAgeSeconds` uses the monotonic clock. C2 should preserve nulls,
++use observation time for freshness, and never average percentiles across windows.
++
++The only supported profile is x86-64 ET_EXEC build ID `3b4ce30aed886594`, with
++zero load bias. The actual dedicated object uses `_ZTV14UDomGameEngine` at
++`0x22520f8`, address point `0x2252108`. Slot 98 at `0x2252418` must contain
++`0x9d2eab0`. Installation validates the full build ID, mapped ELF headers, exact
++entry/dispatch/base-call/world-call/return bytes, private page permissions, and
++that GEngine at `0xdfb9af0` is still null. An executable preinit array is rejected.
++The first and subsequent samples corroborate the object against GEngine and the
++expected vptr. Unknown builds fail closed. There is no late installation retry.
++
++Both build systems link the library with `-z nodelete` so the forwarding code and
++process-lifetime state survive while the slot references them. Stop disables
++sampling and does not unpatch. Failure to restore page permissions leaves valid
++forwarding but faults metrics and fails runtime acceptance. No game file is
++modified by this producer.
++
++Run `make -j1 test` for native arithmetic, overflow/recovery, forwarding/unwind,
++unknown-build rejection, concurrency and response-schema checks. These tests do
++not start the game or validate the actual binary's runtime behavior. Packaging,
++empty-server verification, overhead measurement and C2 integration remain part
++of the parent-controlled actualgameverification workflow.
++
+ ## SDK
+ 
+ The engine layer is driven by a Dumper-7 dump of the server binary, which is not included
+diff --git a/src/api/system_routes.cpp b/src/api/system_routes.cpp
+index d526fd5..40ce0cb 100644
+--- a/src/api/system_routes.cpp
++++ b/src/api/system_routes.cpp
+@@ -1,13 +1,49 @@
+ #include "api_routes.h"
+ 
+ #include "../runtime.h"
++#include "../engine/tick_metrics.h"
+ 
+ #include <cstdio>
++#include <iomanip>
++#include <locale>
+ #include <sstream>
+ 
+ namespace ApiRoutes {
++namespace {
++
++HttpResponse MetricsResponse(TickMetrics::Snapshot snapshot, bool engineReady) {
++    if (snapshot.measurement && !engineReady) snapshot = {"starting", "engine-not-ready", {}};
++    std::ostringstream out;
++    out.imbue(std::locale::classic());
++    out << std::setprecision(12)
++        << "{\"schemaVersion\":1,\"tick\":{\"status\":\"" << snapshot.status
++        << "\",\"source\":\"engine_tick_hook\",\"scope\":\"UDomGameEngine::Tick\",\"reason\":\""
++        << Json::Escape(snapshot.reason) << "\",";
++    if (snapshot.measurement) {
++        const auto& m = *snapshot.measurement;
++        out << "\"windowSeconds\":" << m.windowSeconds
++            << ",\"sampleCount\":" << m.sampleCount
++            << ",\"lastSampleAgeSeconds\":" << m.lastSampleAgeSeconds
++            << ",\"observedAtUnixMs\":" << m.observedAtUnixMs
++            << ",\"rateHz\":" << m.rateHz
++            << ",\"executionMs\":{\"p50\":" << m.p50Ms
++            << ",\"p95\":" << m.p95Ms << ",\"p99\":" << m.p99Ms << "}";
++    } else {
++        out << "\"windowSeconds\":null,\"sampleCount\":null,\"lastSampleAgeSeconds\":null,"
++            << "\"observedAtUnixMs\":null,\"rateHz\":null,"
++            << "\"executionMs\":{\"p50\":null,\"p95\":null,\"p99\":null}";
++    }
++    out << "}}";
++    return JsonResponse(out.str());
++}
++
++}
+ 
+ void RegisterSystem(HttpServer& server) {
++    server.Get("/api/metrics", [](const HttpRequest&) -> HttpResponse {
++        return MetricsResponse(TickMetrics::Read(), EngineReady());
++    });
++
+     server.Get("/api/hello", [](const HttpRequest&) -> HttpResponse {
+         return JsonResponse(R"({"message":"Hello from RSDWRestAPI!","status":"ok"})");
+     });
+diff --git a/src/engine/tick_metrics.cpp b/src/engine/tick_metrics.cpp
+new file mode 100644
+index 0000000..be98805
+--- /dev/null
++++ b/src/engine/tick_metrics.cpp
+@@ -0,0 +1,400 @@
++#include "tick_metrics.h"
++
++#include <algorithm>
++#include <array>
++#include <cstdio>
++#include <cstring>
++#include <elf.h>
++#include <fcntl.h>
++#include <link.h>
++#include <mutex>
++#include <new>
++#include <pthread.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <time.h>
++#include <unistd.h>
++
++namespace TickMetrics {
++namespace {
++
++constexpr uintptr_t kSlot = 0x2252418;
++constexpr uintptr_t kTick = 0x9d2eab0;
++constexpr uintptr_t kAddressPoint = 0x2252108;
++constexpr uintptr_t kGEngine = 0xdfb9af0;
++constexpr uint8_t kBuildId[] = {0x3b, 0x4c, 0xe3, 0x0a, 0xed, 0x88, 0x65, 0x94};
++constexpr uint8_t kEntry[] = {0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55,
++                            0x41, 0x54, 0x53, 0x50};
++constexpr uint8_t kDispatch[] = {0xff, 0x90, 0x10, 0x03, 0x00, 0x00};
++constexpr uint8_t kBaseCall[] = {0xe8, 0x0e, 0xb9, 0x3d, 0xfe};
++constexpr uint8_t kWorldCall[] = {0xe8, 0x00, 0x9e, 0x1c, 0x00};
++constexpr int64_t kSecond = 1000000000;
++constexpr int64_t kLookback = 10 * kSecond;
++constexpr int64_t kStale = 2 * kSecond;
++constexpr size_t kCapacity = 8192;
++using TickFn = void (*)(void*, float, bool);
++
++struct Sample { int64_t entry = 0, end = 0; };
++
++struct History {
++    std::array<Sample, kCapacity> records{};
++    size_t next = 0, count = 0;
++    Sample evicted{};
++    int64_t observedAtUnixMs = 0;
++
++    const Sample& At(size_t i) const {
++        return records[(next + kCapacity - count + i) % kCapacity];
++    }
++
++    bool Append(Sample sample, int64_t unixMs) {
++        if (sample.entry <= 0 || sample.end < sample.entry || unixMs <= 0) return false;
++        if (count && sample.entry < At(count - 1).end) return false;
++        if (count && sample.end <= At(count - 1).end) return false;
++        if (count == kCapacity) evicted = records[next];
++        records[next] = sample;
++        next = (next + 1) % kCapacity;
++        count = std::min(count + 1, kCapacity);
++        observedAtUnixMs = unixMs;
++        return true;
++    }
++};
++
++struct State {
++    std::mutex mutex;
++    History history;
++    TickFn original = nullptr;
++    const char* status = "starting";
++    const char* reason = "not-installed";
++    bool attempted = false, collecting = false, active = false;
++    void* engine = nullptr;
++    pthread_t thread{};
++};
++
++State* Storage() noexcept {
++    static State* state = []() noexcept -> State* {
++        try { return new (std::nothrow) State; }
++        catch (...) { return nullptr; }
++    }();
++    return state;
++}
++
++int64_t Now(clockid_t clock) noexcept {
++    timespec ts{};
++    if (clock_gettime(clock, &ts) != 0) return 0;
++    return static_cast<int64_t>(ts.tv_sec) * kSecond + ts.tv_nsec;
++}
++
++void Fault(State& state, const char* reason) {
++    state.collecting = false;
++    state.status = "faulted";
++    state.reason = reason;
++}
++
++Snapshot Summarize(const History& history, int64_t now) {
++    if (!history.count) return {"warming", "no-completed-ticks", {}};
++    const auto& last = history.At(history.count - 1);
++    if (now < last.end) return {"faulted", "clock-order", {}};
++    if (now - last.end > kStale) return {"stale", "no-recent-completion", {}};
++    const int64_t cutoff = now - kLookback;
++    if (history.evicted.end && history.evicted.end > cutoff) return {"warming", "window-overflow", {}};
++
++    int64_t anchor = history.evicted.end;
++    size_t first = 0;
++    while (first < history.count && history.At(first).end <= cutoff) {
++        anchor = history.At(first++).end;
++    }
++    if (!anchor && first < history.count) anchor = history.At(first++).end;
++    const size_t n = history.count - first;
++    const int64_t span = last.end - anchor;
++    if (!anchor || !n || span < kSecond) return {"warming", "need-one-second-and-anchor", {}};
++
++    std::array<int64_t, kCapacity> durations{};
++    for (size_t i = 0; i < n; ++i) {
++        const auto& sample = history.At(first + i);
++        durations[i] = sample.end - sample.entry;
++    }
++    std::sort(durations.begin(), durations.begin() + n);
++    const auto percentile = [&](size_t percent) {
++        return durations[(percent * n + 99) / 100 - 1] / 1000000.0;
++    };
++    const double seconds = span / static_cast<double>(kSecond);
++    return {"ready", "", Measurement{seconds, n, (now - last.end) / static_cast<double>(kSecond),
++            history.observedAtUnixMs, n / seconds, percentile(50), percentile(95), percentile(99)}};
++}
++
++bool Begin(State& state, void* engine, void* actualEngine, uintptr_t vptr) {
++    std::lock_guard<std::mutex> lock(state.mutex);
++    if (!state.collecting) return false;
++    if (!engine || engine != actualEngine || vptr != kAddressPoint || state.active ||
++        (state.engine && (state.engine != engine || !pthread_equal(state.thread, pthread_self())))) {
++        Fault(state, "unexpected-tick-instance-thread-or-recursion");
++        return false;
++    }
++    state.engine = engine;
++    state.thread = pthread_self();
++    state.active = true;
++    return true;
++}
++
++struct Completion {
++    State& state;
++    bool tracked;
++    bool finished = false;
++    ~Completion() noexcept {
++        if (!tracked || finished) return;
++        try {
++            std::lock_guard<std::mutex> lock(state.mutex);
++            state.active = false;
++            Fault(state, "tick-unwound-or-telemetry-failed");
++        } catch (...) {}
++    }
++    void Finish(Sample sample, int64_t unixMs) noexcept {
++        if (!tracked) return;
++        try {
++            std::lock_guard<std::mutex> lock(state.mutex);
++            state.active = false;
++            if (state.collecting && !state.history.Append(sample, unixMs)) Fault(state, "clock-order");
++            finished = true;
++        } catch (...) {}
++    }
++};
++
++void MeasureTick(State& state, void* engine, float delta, bool idle, void* actualEngine, uintptr_t vptr) {
++    bool tracked = false;
++    try {
++        tracked = Begin(state, engine, actualEngine, vptr);
++    } catch (...) {
++        try {
++            std::lock_guard<std::mutex> lock(state.mutex);
++            Fault(state, "telemetry-failed");
++        } catch (...) {}
++    }
++    Completion completion{state, tracked};
++    const int64_t entry = tracked ? Now(CLOCK_MONOTONIC) : 0;
++    state.original(engine, delta, idle);
++    const int64_t end = tracked ? Now(CLOCK_MONOTONIC) : 0;
++    if (tracked) completion.Finish({entry, end}, Now(CLOCK_REALTIME) / 1000000);
++}
++
++void HookedTick(void* engine, float delta, bool idle) {
++    State& state = *Storage();
++    void* actualEngine = nullptr;
++    uintptr_t vptr = 0;
++    std::memcpy(&actualEngine, reinterpret_cast<const void*>(kGEngine), sizeof(actualEngine));
++    if (engine) std::memcpy(&vptr, engine, sizeof(vptr));
++    MeasureTick(state, engine, delta, idle, actualEngine, vptr);
++}
++
++struct Mapping { uintptr_t begin, end; int protection; bool privateMapping; };
++
++bool MappingFor(uintptr_t address, size_t bytes, Mapping& out) {
++    if (bytes > UINTPTR_MAX - address) return false;
++    FILE* maps = std::fopen("/proc/self/maps", "r");
++    if (!maps) return false;
++    char line[1024];
++    bool found = false;
++    while (std::fgets(line, sizeof(line), maps)) {
++        unsigned long begin, end;
++        char perms[5]{};
++        if (std::sscanf(line, "%lx-%lx %4s", &begin, &end, perms) != 3) continue;
++        if (begin > address || address >= end || bytes > end - address) continue;
++        out = {begin, end, (perms[0] == 'r' ? PROT_READ : 0) |
++               (perms[1] == 'w' ? PROT_WRITE : 0) | (perms[2] == 'x' ? PROT_EXEC : 0), perms[3] == 'p'};
++        found = true;
++        break;
++    }
++    std::fclose(maps);
++    return found;
++}
++
++bool ReadAt(int fd, void* out, size_t size, uint64_t offset, uint64_t fileSize) {
++    return offset <= fileSize && size <= fileSize - offset &&
++           pread(fd, out, size, static_cast<off_t>(offset)) == static_cast<ssize_t>(size);
++}
++
++bool BuildNotesMatch(const uint8_t* notes, size_t size, unsigned& matches) {
++    size_t offset = 0;
++    while (size - offset >= sizeof(Elf64_Nhdr)) {
++        Elf64_Nhdr note;
++        std::memcpy(&note, notes + offset, sizeof(note));
++        offset += sizeof(note);
++        const uint64_t nameBytes = (static_cast<uint64_t>(note.n_namesz) + 3) & ~uint64_t(3);
++        const uint64_t descBytes = (static_cast<uint64_t>(note.n_descsz) + 3) & ~uint64_t(3);
++        if (nameBytes > size - offset || descBytes > size - offset - nameBytes) return false;
++        if (note.n_type == NT_GNU_BUILD_ID && note.n_namesz == 4 &&
++            std::memcmp(notes + offset, "GNU\0", 4) == 0) {
++            if (note.n_descsz != sizeof(kBuildId) ||
++                std::memcmp(notes + offset + nameBytes, kBuildId, sizeof(kBuildId)) != 0) return false;
++            ++matches;
++        }
++        offset += nameBytes + descBytes;
++    }
++    return offset == size;
++}
++
++struct Image {
++    std::array<Elf64_Phdr, 128> headers{};
++    size_t count = 0;
++    bool mapped = false;
++};
++
++int MatchMainImage(dl_phdr_info* info, size_t, void* opaque) {
++    if (info->dlpi_name && info->dlpi_name[0]) return 0;
++    auto& image = *static_cast<Image*>(opaque);
++    image.mapped = info->dlpi_addr == 0 && info->dlpi_phnum == image.count &&
++        std::memcmp(info->dlpi_phdr, image.headers.data(), image.count * sizeof(Elf64_Phdr)) == 0;
++    return 1;
++}
++
++bool KnownImage(int fd, Image& image) {
++    struct stat st{};
++    Elf64_Ehdr header{};
++    if (fstat(fd, &st) || st.st_size < 0 || !ReadAt(fd, &header, sizeof(header), 0, st.st_size)) return false;
++    if (std::memcmp(header.e_ident, "\177ELF\2\1\1", 7) || header.e_type != ET_EXEC ||
++        header.e_machine != EM_X86_64 || header.e_version != EV_CURRENT ||
++        header.e_ehsize != sizeof(header) || header.e_phentsize != sizeof(Elf64_Phdr) ||
++        !header.e_phnum || header.e_phnum > image.headers.size()) return false;
++    image.count = header.e_phnum;
++    if (!ReadAt(fd, image.headers.data(), image.count * sizeof(Elf64_Phdr), header.e_phoff, st.st_size)) return false;
++    unsigned matches = 0;
++    uintptr_t lowest = UINTPTR_MAX;
++    std::array<uint8_t, 4096> notes{};
++    std::array<Elf64_Dyn, 256> dynamic{};
++    for (size_t i = 0; i < image.count; ++i) {
++        const auto& ph = image.headers[i];
++        if (ph.p_type == PT_LOAD) {
++            if (ph.p_filesz > ph.p_memsz || ph.p_memsz > UINTPTR_MAX - ph.p_vaddr) return false;
++            lowest = std::min(lowest, static_cast<uintptr_t>(ph.p_vaddr));
++        }
++        if (ph.p_type == PT_NOTE) {
++            if (ph.p_filesz > notes.size() || !ReadAt(fd, notes.data(), ph.p_filesz, ph.p_offset, st.st_size) ||
++                !BuildNotesMatch(notes.data(), ph.p_filesz, matches)) return false;
++        }
++        if (ph.p_type == PT_DYNAMIC) {
++            if (ph.p_filesz > sizeof(dynamic) || ph.p_filesz % sizeof(Elf64_Dyn) ||
++                !ReadAt(fd, dynamic.data(), ph.p_filesz, ph.p_offset, st.st_size)) return false;
++            bool terminated = false;
++            for (size_t j = 0; j < ph.p_filesz / sizeof(Elf64_Dyn); ++j) {
++                const auto& entry = dynamic[j];
++                if (entry.d_tag == DT_NULL) { terminated = true; break; }
++                if (entry.d_tag == DT_PREINIT_ARRAY ||
++                    (entry.d_tag == DT_PREINIT_ARRAYSZ && entry.d_un.d_val)) return false;
++            }
++            if (!terminated) return false;
++        }
++    }
++    if (matches != 1 || lowest != 0x200000) return false;
++    dl_iterate_phdr(MatchMainImage, &image);
++    return image.mapped;
++}
++
++bool InSegment(const Image& image, uintptr_t address, size_t bytes, unsigned flags) {
++    for (size_t i = 0; i < image.count; ++i) {
++        const auto& ph = image.headers[i];
++        if (ph.p_type == PT_LOAD && (ph.p_flags & flags) == flags && address >= ph.p_vaddr &&
++            address - ph.p_vaddr <= ph.p_memsz && bytes <= ph.p_memsz - (address - ph.p_vaddr)) return true;
++    }
++    return false;
++}
++
++bool CodeMatches(const Image& image, uintptr_t address, const uint8_t* expected, size_t size) {
++    Mapping map{};
++    return InSegment(image, address, size, PF_R | PF_X) && MappingFor(address, size, map) &&
++        (map.protection & (PROT_READ | PROT_EXEC)) == (PROT_READ | PROT_EXEC) &&
++        std::memcmp(reinterpret_cast<const void*>(address), expected, size) == 0;
++}
++
++const char* Install(State& state) {
++    const int fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
++    if (fd < 0) return "executable-unreadable";
++    Image image;
++    const bool known = KnownImage(fd, image);
++    close(fd);
++    if (!known) return "unsupported-build-or-mapping";
++    const uint8_t ret = 0xc3;
++    if (!CodeMatches(image, kTick, kEntry, sizeof(kEntry)) ||
++        !CodeMatches(image, 0x8c52985, kDispatch, sizeof(kDispatch)) ||
++        !CodeMatches(image, 0x9d2eb6d, kBaseCall, sizeof(kBaseCall)) ||
++        !CodeMatches(image, 0x810a6cb, kWorldCall, sizeof(kWorldCall)) ||
++        !CodeMatches(image, 0x9d2ec2c, &ret, 1)) return "tick-code-mismatch";
++
++    Mapping slotMap{}, engineMap{};
++    if (!InSegment(image, kSlot, sizeof(uintptr_t), PF_R) ||
++        !InSegment(image, kGEngine, sizeof(uintptr_t), PF_R) ||
++        !MappingFor(kGEngine, sizeof(uintptr_t), engineMap) || !(engineMap.protection & PROT_READ) ||
++        !MappingFor(kSlot, sizeof(uintptr_t), slotMap) || !slotMap.privateMapping ||
++        !(slotMap.protection & PROT_READ) || (slotMap.protection & PROT_EXEC)) return "unsafe-slot-mapping";
++    uintptr_t original = 0;
++    uintptr_t engine = 0;
++    std::memcpy(&engine, reinterpret_cast<const void*>(kGEngine), sizeof(engine));
++    if (engine) return "engine-already-created";
++    std::memcpy(&original, reinterpret_cast<void*>(kSlot), sizeof(original));
++    if (original != kTick) return "tick-slot-mismatch";
++    const long pageSize = sysconf(_SC_PAGESIZE);
++    if (pageSize <= 0 || pageSize > 65536 || (pageSize & (pageSize - 1))) return "invalid-page-size";
++    const uintptr_t page = kSlot & ~(static_cast<uintptr_t>(pageSize) - 1);
++    if (page < slotMap.begin || static_cast<uintptr_t>(pageSize) > slotMap.end - page ||
++        kSlot + sizeof(uintptr_t) > page + pageSize) return "unsafe-slot-page";
++    if (mprotect(reinterpret_cast<void*>(page), pageSize, slotMap.protection | PROT_WRITE)) return "slot-not-writable";
++
++    state.original = reinterpret_cast<TickFn>(original);
++    state.collecting = true;
++    state.status = "warming";
++    state.reason = "no-completed-ticks";
++    const uintptr_t replacement = reinterpret_cast<uintptr_t>(&HookedTick);
++    std::memcpy(reinterpret_cast<void*>(kSlot), &replacement, sizeof(replacement));
++    const int restored = mprotect(reinterpret_cast<void*>(page), pageSize, slotMap.protection);
++    uintptr_t installed = 0;
++    std::memcpy(&installed, reinterpret_cast<void*>(kSlot), sizeof(installed));
++    if (restored || installed != replacement) {
++        Fault(state, restored ? "slot-protection-restore-failed" : "slot-publication-failed");
++    }
++    return nullptr;
++}
++
++}
++
++void InstallBeforeMain() noexcept {
++    State* state = Storage();
++    if (!state) return;
++    try {
++        std::lock_guard<std::mutex> lock(state->mutex);
++        if (state->attempted) return;
++        state->attempted = true;
++        if (const char* reason = Install(*state)) {
++            state->status = "unsupported";
++            state->reason = reason;
++        }
++    } catch (...) {
++        state->collecting = false;
++        state->status = "faulted";
++        state->reason = "installation-failed";
++    }
++}
++
++Snapshot Read() {
++    State* state = Storage();
++    if (!state) return {"unsupported", "state-allocation-failed", {}};
++    History copy;
++    {
++        // ponytail: bounded 128 KiB copy; change synchronization only if measured contention matters.
++        std::lock_guard<std::mutex> lock(state->mutex);
++        if (!state->collecting) return {state->status, state->reason, {}};
++        copy = state->history;
++    }
++    return Summarize(copy, Now(CLOCK_MONOTONIC));
++}
++
++void StopCollecting() noexcept {
++    State* state = Storage();
++    if (!state) return;
++    try {
++        std::lock_guard<std::mutex> lock(state->mutex);
++        state->attempted = true;
++        state->collecting = false;
++        state->status = "stopped";
++        state->reason = "shutdown";
++    } catch (...) {}
++}
++
++}
+diff --git a/src/engine/tick_metrics.h b/src/engine/tick_metrics.h
+new file mode 100644
+index 0000000..893301b
+--- /dev/null
++++ b/src/engine/tick_metrics.h
+@@ -0,0 +1,30 @@
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++
++namespace TickMetrics {
++
++struct Measurement {
++    double windowSeconds;
++    size_t sampleCount;
++    double lastSampleAgeSeconds;
++    int64_t observedAtUnixMs;
++    double rateHz;
++    double p50Ms, p95Ms, p99Ms;
++};
++
++struct Snapshot {
++    const char* status;
++    const char* reason;
++    std::optional<Measurement> measurement;
++};
++
++// Only called synchronously by the preload constructor, before InitThread.
++void InstallBeforeMain() noexcept;
++Snapshot Read();
++// Forwarding state/code remain alive; the shared library is linked NODELETE.
++void StopCollecting() noexcept;
++
++}
+diff --git a/src/rsdwapi.cpp b/src/rsdwapi.cpp
+index 6d5c3b2..d9729ba 100644
+--- a/src/rsdwapi.cpp
++++ b/src/rsdwapi.cpp
+@@ -6,6 +6,7 @@
+ #include "engine/dom_engine.h"
+ #include "engine/native_call.h"
+ #include "engine/process_event.h"
++#include "engine/tick_metrics.h"
+ #include "http/http_server.h"
+ #include "rcon/rcon_commands.h"
+ #include "rcon/rcon_server.h"
+@@ -32,6 +33,7 @@ std::atomic<bool> g_StoppedCleanly{false};
+ 
+ void ShutdownListeners() {
+     if (g_StoppedCleanly.exchange(true)) return;
++    TickMetrics::StopCollecting();
+     g_Shutdown = true;
+ 
+     if (g_HttpServer) g_HttpServer->Stop();
+@@ -172,10 +174,12 @@ void InitThread() {
+ }
+ 
+ extern "C" __attribute__((constructor)) void RSDWApiLoad() {
++    TickMetrics::InstallBeforeMain();
+     g_InitThread = new std::thread(InitThread);
+ }
+ 
+ extern "C" __attribute__((destructor)) void RSDWApiUnload() {
++    TickMetrics::StopCollecting();
+     g_Shutdown = true;
+     Runtime::BeginShutdown();
+ }
+diff --git a/tests/tick_metrics_test.cpp b/tests/tick_metrics_test.cpp
+new file mode 100644
+index 0000000..c6a18b9
+--- /dev/null
++++ b/tests/tick_metrics_test.cpp
+@@ -0,0 +1,224 @@
++#include "../src/engine/tick_metrics.cpp"
++#include "../src/api/system_routes.cpp"
++
++#include <cassert>
++#include <cmath>
++#include <iostream>
++#include <map>
++#include <thread>
++
++DomEngine::Engine* DomEngine::g_Engine = nullptr;
++static std::map<std::string, RouteHandler> handlers;
++HttpServer::HttpServer() = default;
++HttpServer::~HttpServer() = default;
++void HttpServer::Get(const std::string& path, RouteHandler handler) { handlers[path] = std::move(handler); }
++
++using namespace TickMetrics;
++constexpr int64_t ms = 1000000;
++constexpr int64_t unixMs = 1800000000000;
++
++static bool Is(const Snapshot& value, const char* status) {
++    return std::strcmp(value.status, status) == 0;
++}
++
++static History Fixture() {
++    History h;
++    assert(h.Append({900 * ms, 1000 * ms}, unixMs));
++    const int64_t durations[] = {1, 2, 3, 4, 100};
++    for (int i = 0; i < 5; ++i) {
++        const int64_t end = (1200 + i * 200) * ms;
++        assert(h.Append({end - durations[i] * ms, end}, unixMs + 200 + i * 200));
++    }
++    return h;
++}
++
++static void Windows() {
++    History h;
++    assert(Is(Summarize(h, kSecond), "warming"));
++    assert(h.Append({900 * ms, kSecond}, unixMs));
++    assert(Is(Summarize(h, kSecond), "warming"));
++    h = Fixture();
++    auto snapshot = Summarize(h, 2250 * ms);
++    assert(Is(snapshot, "ready"));
++    const auto& m = *snapshot.measurement;
++    assert(m.sampleCount == 5 && m.windowSeconds == 1 && m.rateHz == 5);
++    assert(m.p50Ms == 3 && m.p95Ms == 100 && m.p99Ms == 100);
++    assert(m.lastSampleAgeSeconds == 0.25 && m.observedAtUnixMs == unixMs + 1000);
++    assert(Is(Summarize(h, 4001 * ms), "stale"));
++    assert(Is(Summarize(h, 1999 * ms), "faulted"));
++    assert(!h.Append({1900 * ms, 2200 * ms}, unixMs));
++    assert(!h.Append({2300 * ms, 2200 * ms}, unixMs));
++    assert(!h.Append({2200 * ms, 2300 * ms}, 0));
++
++    assert(h.Append({2100 * ms, 14100 * ms}, unixMs + 13100));
++    snapshot = Summarize(h, 14100 * ms);
++    assert(Is(snapshot, "ready"));
++    assert(snapshot.measurement->sampleCount == 1);
++    assert(std::abs(snapshot.measurement->windowSeconds - 12.1) < 1e-9);
++    assert(std::abs(snapshot.measurement->rateHz - 1.0 / 12.1) < 1e-9);
++    assert(snapshot.measurement->p99Ms == 12000);
++
++    History wrap;
++    for (size_t i = 1; i <= kCapacity + 20; ++i) {
++        const int64_t end = static_cast<int64_t>(i) * 10 * ms;
++        assert(wrap.Append({end - ms, end}, unixMs + i * 10));
++    }
++    snapshot = Summarize(wrap, wrap.At(wrap.count - 1).end);
++    assert(Is(snapshot, "ready") && snapshot.measurement->sampleCount == 1000);
++    assert(snapshot.measurement->rateHz == 100 && snapshot.measurement->windowSeconds == 10);
++
++    History overflow;
++    for (size_t i = 1; i <= kCapacity + 20; ++i) {
++        const int64_t end = static_cast<int64_t>(i) * ms;
++        assert(overflow.Append({end - ms / 2, end}, unixMs + i));
++    }
++    assert(Is(Summarize(overflow, overflow.At(overflow.count - 1).end), "warming"));
++    assert(std::strcmp(Summarize(overflow, overflow.At(overflow.count - 1).end).reason, "window-overflow") == 0);
++    for (int i = 1; i <= 1100; ++i) {
++        const int64_t end = (static_cast<int64_t>(kCapacity + 20) + i * 10) * ms;
++        assert(overflow.Append({end - ms, end}, unixMs + end / ms));
++    }
++    assert(Is(Summarize(overflow, overflow.At(overflow.count - 1).end), "ready"));
++}
++
++static int calls;
++static void* seenEngine;
++static float seenDelta;
++static bool seenIdle;
++static void Original(void* engine, float delta, bool idle) {
++    ++calls;
++    seenEngine = engine;
++    seenDelta = delta;
++    seenIdle = idle;
++}
++static void Throwing(void* engine, float delta, bool idle) {
++    Original(engine, delta, idle);
++    throw 42;
++}
++static State* recursiveState;
++static void Recursive(void* engine, float delta, bool idle) {
++    Original(engine, delta, idle);
++    if (calls == 1) MeasureTick(*recursiveState, engine, delta, idle, engine, kAddressPoint);
++}
++
++static void Forwarding() {
++    State state;
++    int engine, other;
++    state.original = Original;
++    state.collecting = true;
++    calls = 0;
++    MeasureTick(state, &engine, 0.125f, true, &engine, kAddressPoint);
++    assert(calls == 1 && seenEngine == &engine && seenDelta == 0.125f && seenIdle);
++    assert(state.history.count == 1 && !state.active);
++    state.collecting = false;
++    MeasureTick(state, &engine, 0.25f, false, &engine, kAddressPoint);
++    assert(calls == 2 && state.history.count == 1 && seenDelta == 0.25f && !seenIdle);
++    state.collecting = true;
++    MeasureTick(state, &engine, 0.5f, true, &other, kAddressPoint);
++    assert(calls == 3 && !state.collecting && std::strcmp(state.status, "faulted") == 0);
++    assert(state.history.count == 1);
++
++    State throwing;
++    throwing.original = Throwing;
++    throwing.collecting = true;
++    bool propagated = false;
++    try { MeasureTick(throwing, &engine, 1, false, &engine, kAddressPoint); }
++    catch (int value) { propagated = value == 42; }
++    assert(propagated && !throwing.collecting && !throwing.active && !throwing.history.count);
++
++    State recursive;
++    recursive.original = Recursive;
++    recursive.collecting = true;
++    recursiveState = &recursive;
++    calls = 0;
++    MeasureTick(recursive, &engine, 1, true, &engine, kAddressPoint);
++    assert(calls == 2 && !recursive.collecting && !recursive.history.count && !recursive.active);
++
++    State thread;
++    thread.original = Original;
++    thread.collecting = true;
++    MeasureTick(thread, &engine, 1, false, &engine, kAddressPoint);
++    std::thread foreign([&] { MeasureTick(thread, &engine, 1, false, &engine, kAddressPoint); });
++    foreign.join();
++    assert(!thread.collecting && thread.history.count == 1);
++}
++
++static void ProfileAndPublication() {
++    uint8_t notes[24] = {4, 0, 0, 0, 8, 0, 0, 0, 3, 0, 0, 0, 'G', 'N', 'U', 0};
++    std::memcpy(notes + 16, kBuildId, sizeof(kBuildId));
++    unsigned matches = 0;
++    assert(BuildNotesMatch(notes, sizeof(notes), matches) && matches == 1);
++    matches = 0;
++    assert(!BuildNotesMatch(notes, 23, matches));
++    notes[4] = 9;
++    assert(!BuildNotesMatch(notes, sizeof(notes), matches));
++    notes[4] = 8;
++    notes[16] ^= 1;
++    assert(!BuildNotesMatch(notes, sizeof(notes), matches));
++    notes[0] = 255;
++    assert(!BuildNotesMatch(notes, sizeof(notes), matches));
++    InstallBeforeMain();
++    assert(Is(Read(), "unsupported") && Storage()->original == nullptr);
++    InstallBeforeMain();
++    assert(Is(Read(), "unsupported"));
++    StopCollecting();
++    StopCollecting();
++    InstallBeforeMain();
++    assert(Is(Read(), "stopped") && Storage()->original == nullptr);
++}
++
++static void ConcurrentReadsAndStop() {
++    State& state = *Storage();
++    {
++        std::lock_guard<std::mutex> lock(state.mutex);
++        state.history = {};
++        state.collecting = true;
++    }
++    std::thread writer([&] {
++        for (int i = 0; i < 2000; ++i) {
++            const int64_t end = Now(CLOCK_MONOTONIC);
++            std::lock_guard<std::mutex> lock(state.mutex);
++            if (state.collecting) assert(state.history.Append({end, end}, unixMs + i));
++        }
++    });
++    for (int i = 0; i < 200; ++i) {
++        const auto result = Read();
++        assert(Is(result, "warming") || Is(result, "ready"));
++    }
++    StopCollecting();
++    writer.join();
++    assert(Is(Read(), "stopped"));
++}
++
++static void Schema() {
++    const auto snapshot = Summarize(Fixture(), 2250 * ms);
++    const std::string prefix = "{\"schemaVersion\":1,\"tick\":{";
++    const auto response = ApiRoutes::MetricsResponse(snapshot, true);
++    assert(response.status == 200 && response.contentType == "application/json");
++    assert(response.body == prefix +
++        "\"status\":\"ready\",\"source\":\"engine_tick_hook\",\"scope\":\"UDomGameEngine::Tick\",\"reason\":\"\","
++        "\"windowSeconds\":1,\"sampleCount\":5,\"lastSampleAgeSeconds\":0.25,\"observedAtUnixMs\":1800000001000,"
++        "\"rateHz\":5,\"executionMs\":{\"p50\":3,\"p95\":100,\"p99\":100}}}");
++    const std::string nulls = "\"windowSeconds\":null,\"sampleCount\":null,\"lastSampleAgeSeconds\":null,"
++        "\"observedAtUnixMs\":null,\"rateHz\":null,\"executionMs\":{\"p50\":null,\"p95\":null,\"p99\":null}}}";
++    const auto starting = ApiRoutes::MetricsResponse(snapshot, false);
++    assert(starting.body.find("\"status\":\"starting\"") != std::string::npos);
++    assert(starting.body.find(nulls) != std::string::npos);
++    for (const char* status : {"warming", "unsupported", "faulted", "stale", "stopped"}) {
++        const auto unavailable = ApiRoutes::MetricsResponse({status, "test", {}}, true);
++        assert(unavailable.body.find(nulls) != std::string::npos);
++    }
++    HttpServer server;
++    ApiRoutes::RegisterSystem(server);
++    assert(handlers.count("/api/metrics") == 1);
++    assert(handlers.at("/api/metrics")({}).body.find(nulls) != std::string::npos);
++}
++
++int main() {
++    Windows();
++    Forwarding();
++    ProfileAndPublication();
++    ConcurrentReadsAndStop();
++    Schema();
++    std::cout << "PASS tick windows, long ticks, overflow recovery, forwarding, unwind, profile rejection, concurrency, schema\n";
++}
+diff --git a/xmake.lua b/xmake.lua
+index ce7f210..79da00f 100644
+--- a/xmake.lua
++++ b/xmake.lua
+@@ -24,6 +24,7 @@ target("rsdwapi")
+               "src/discord/webhook.cpp",
+               "src/engine/native_call.cpp",
+               "src/engine/process_event.cpp",
++              "src/engine/tick_metrics.cpp",
+               "src/engine/server.cpp",
+               "src/http/http_server.cpp",
+               "src/net/access_control.cpp",
+@@ -37,3 +38,4 @@ target("rsdwapi")
+     set_filename("librsdwapi.so")
+     set_targetdir("dist")
+     add_syslinks("pthread", "dl")
++    add_ldflags("-Wl,-z,nodelete")

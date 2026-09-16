@@ -309,7 +309,15 @@ GHCR hosts the OCI chart. `helm repo add` does not apply. For public discovery, 
 - Jagex image `1.1.1` has known update-detection and process-monitoring limits. Test `RSDW_AUTO_STOP_ON_UPDATE` and crash recovery against your game build.
 - The Pod has no game readiness probe when the API is disabled.
 - RSDWServerAPI tag `0.1.3` reports its internal version as `0.1.1`.
-- The exporter supplies no verified tick rate or tick latency.
+- Tick measurements require executable build ID `3b4ce30aed886594`. Unknown builds return unavailable measurements without installing the tick wrapper.
+
+## Tick telemetry
+
+The image applies [the API source patch](patches/rsdw-api-ticks.patch) to pinned RSDWServerAPI commit `1bf3b918e780e5707decc122c3d77938949c3862` before compilation. It adds authenticated `GET /api/metrics` to the existing API. No Unreal rebuild, shipped game-file changes, or additional runtime service is required.
+
+The startup wrapper measures completed `UDomGameEngine::Tick` calls and their elapsed execution time. Responses contain measured cadence, p50/p95/p99 durations, the actual window, sample count, and last-completion timestamp. Missing, warming, unsupported, or stale measurements remain null. Duration includes the nested engine/world tick and synchronous delegates, not the entire outer frame loop.
+
+The Docker build runs the patch's native tests in the Sniper SDK. For a new game build, verify the executable identity, ABI, call boundary, and actual running instance before adding a profile. Never replace the build ID alone to bypass compatibility checks. The patch's README documents the contract and installation checks. C2 issue [#3](https://github.com/petzkod5/rsdw-c2/issues/3) contains the companion dashboard requirement.
 
 ## License
 
