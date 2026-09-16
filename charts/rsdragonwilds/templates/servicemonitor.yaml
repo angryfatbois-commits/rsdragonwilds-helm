@@ -1,0 +1,25 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "rsdw.name" . }}
+  labels:
+    {{- include "rsdw.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "rsdw.labels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics
+  endpoints:
+    {{- range $module := list "health" "players" }}
+    - port: metrics
+      path: /probe
+      interval: {{ $.Values.metrics.serviceMonitor.interval }}
+      params:
+        module: [{{ $module }}]
+        target: ["http://127.0.0.1:{{ $.Values.api.port }}/api/{{ $module }}"]
+    {{- end }}
+{{- end }}

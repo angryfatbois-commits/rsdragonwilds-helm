@@ -48,3 +48,4 @@ printf 'partial' > "$work/interrupted/.seed.interrupted"
 bash container/seed-save.sh "$work/source" world.sav "$work/interrupted"
 cmp "$work/source/world.sav" "$work/interrupted/world.sav"
 echo 'Container hook and save import checks passed'
+python3 tests/chart.py
