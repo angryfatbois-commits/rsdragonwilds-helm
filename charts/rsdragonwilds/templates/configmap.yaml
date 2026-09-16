@@ -1,0 +1,36 @@
+{{- if or .Values.metrics.enabled .Values.config.dedicatedServerIni }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rsdw.name" . }}
+  labels:
+    {{- include "rsdw.labels" . | nindent 4 }}
+data:
+  {{- if .Values.config.dedicatedServerIni }}
+  DedicatedServer.ini: |
+    {{- .Values.config.dedicatedServerIni | nindent 4 }}
+  {{- end }}
+  {{- if .Values.metrics.enabled }}
+  config.yml: |
+    modules:
+      health:
+        http_client_config:
+          authorization:
+            credentials_file: /run/rsdwapi/token
+        metrics:
+          - name: rsdw_engine_ready
+            help: Whether RSDWServerAPI reports engine readiness
+            path: '{.engineReady}'
+          - name: rsdw_uptime_seconds
+            help: RSDWServerAPI process uptime in seconds
+            path: '{.uptimeSeconds}'
+      players:
+        http_client_config:
+          authorization:
+            credentials_file: /run/rsdwapi/token
+        metrics:
+          - name: rsdw_players
+            help: Connected player count reported by RSDWServerAPI
+            path: '{.count}'
+  {{- end }}
+{{- end }}

@@ -1,0 +1,84 @@
+image:
+  repository: ghcr.io/petzkod5/rsdragonwilds-server
+  tag: "" # Defaults to Chart.appVersion.
+  digest: "" # Takes precedence over tag.
+  pullPolicy: IfNotPresent
+
+server:
+  port: 7777 # Sets RSDW_PORT and the UDP target port.
+  env:
+    RSDW_OWNER_ID: "" # Required EOS player ID, or supply through extraEnv.
+    RSDW_SERVER_NAME: Dragonwilds
+    RSDW_WORLD_NAME: World
+    RSDW_PASSWORD: "" # Empty permits passwordless connections. Prefer extraEnv Secret references.
+    RSDW_ADMINS: "" # Comma-separated EOS player IDs.
+    RSDW_ADMIN_PASSWORD: ""
+    RSDW_ADDITIONAL_ARGS: "" # Upstream quoted command-line argument string.
+    RSDW_AUTO_STOP_ON_UPDATE: "false"
+    DEBUG: "0" # 0 off, 1 SteamCMD, 2 game logging, 3 both.
+    STEAMAPPVALIDATE: "0" # 1 validates Steam files at startup.
+  extraEnv: [] # Kubernetes EnvVar entries override matching env keys.
+
+config:
+  dedicatedServerIni: "" # Full envsubst template. Empty uses Jagex's template.
+
+persistence:
+  existingClaim: ""
+  size: 40Gi
+  storageClass: null # null uses cluster default; "" disables dynamic class selection.
+  accessModes: [ReadWriteOnce]
+  retain: true # Keep chart-created world storage after helm uninstall.
+
+saveSeed:
+  existingClaim: "" # Read-only source volume. Empty disables initial import.
+  path: "" # Relative .sav path on source volume; copied only into an empty world.
+
+api:
+  enabled: true
+  port: 8080
+  bearerTokenSecret:
+    name: "" # Required when API is enabled. Create this Secret before installation.
+    key: token
+  logging:
+    enabled: true
+    verbose: false
+
+metrics:
+  enabled: true
+  image:
+    repository: quay.io/prometheuscommunity/json-exporter
+    tag: v0.8.0
+    pullPolicy: IfNotPresent
+  resources: {}
+  serviceMonitor:
+    enabled: false # Requires Prometheus Operator CRDs.
+    interval: 30s
+    labels: {}
+  networkPolicy:
+    enabled: false # When enabled, only allowedPeers may reach the exporter.
+    allowedPeers: [] # Native NetworkPolicyPeer entries.
+
+service:
+  type: LoadBalancer # Requires a cluster UDP load balancer.
+  port: 7777 # External UDP port. Target is server.port.
+  nodePort: null
+  annotations: {}
+
+resources: {}
+nodeSelector:
+  kubernetes.io/arch: amd64
+tolerations: []
+affinity: {}
+imagePullSecrets: []
+podAnnotations: {}
+podLabels: {}
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
