@@ -3,10 +3,14 @@ ARG JAGEX_IMAGE=ghcr.io/runescape/rsdw-dedicated:1.1.1@sha256:2646cf9105f3113d89
 FROM registry.gitlab.steamos.cloud/steamrt/sniper/sdk@sha256:1c33c507bc75d012e77df5727f93b0d5b8c3f7c8d4142ba5f7a16882cc92e014 AS api-builder
 USER root
 WORKDIR /build
+COPY patches/rsdw-api-ticks.patch /tmp/rsdw-api-ticks.patch
 # RSDWServerAPI 0.1.3. Compile against Sniper's libc, not the release binary.
 RUN git init . && git remote add origin https://github.com/dkoz/RSDWServerAPI.git \
     && git fetch --depth 1 origin 1bf3b918e780e5707decc122c3d77938949c3862 \
-    && git checkout --detach FETCH_HEAD && make -j2
+    && git checkout --detach FETCH_HEAD \
+    && git apply --check /tmp/rsdw-api-ticks.patch \
+    && git apply /tmp/rsdw-api-ticks.patch \
+    && make -j2 && make test
 
 FROM ${JAGEX_IMAGE}
 LABEL org.opencontainers.image.source="https://github.com/petzkod5/rsdragonwilds-helm" \
