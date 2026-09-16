@@ -210,7 +210,9 @@ python3 tests/metrics.py
 
 `tests/check.sh` exercises launcher patching, repeated startup preparation, save import, rejected paths, Helm variants, and invalid values. It runs ShellCheck when installed. `tests/runtime.sh` verifies the final image's library dependencies, UID, and installed hook without preloading the mod into a shell. On Linux, `tests/metrics.py` runs the real exporter against authenticated HTTP fixtures, including HTTP and malformed-JSON failures.
 
-The launcher fixture comes from an actual current Steam download. The official unmodified image booted and created `SaveGames/silvarea.sav`. Local image build and dynamic dependency checks pass. Full modded game startup, engine readiness, player joins, imported-world selection, restart persistence, and graceful shutdown remain pending until exercised against the built image. Kubernetes runtime behavior also needs a real cluster check.
+The launcher fixture comes from an actual current Steam download. The official image booted and created `SaveGames/silvarea.sav`. The derived image then booted the same game payload, reported `engineReady: true`, returned the player-count response, and mapped `librsdwapi.so` only in `RSDragonwildsServer-Linux-Shipping`. A restart loaded the existing world successfully, and the container stopped within one second. RSDWServerAPI tag `0.1.3` still reports its internal version as `0.1.1`; this is an upstream version-string mismatch.
+
+A minimal single-node kind test also passed with an 8 MiB memory request: the Deployment became available, the PVC bound and stayed writable across a `Recreate` rollout, the Pod ran as UID 1000 without a service-account token, and the retained PVC survived uninstall. Player joins and imported-world selection still require an interactive game client and a real seed PVC.
 
 For live verification, install the chart into a disposable namespace with a test owner ID and dedicated PVC. Wait for readiness, then port-forward the metrics Service and query both probes.
 
