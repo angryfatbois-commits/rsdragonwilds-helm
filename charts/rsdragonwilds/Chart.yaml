@@ -2,8 +2,8 @@ apiVersion: v2
 name: rsdragonwilds
 description: RuneScape Dragonwilds dedicated server with REST metrics and persistent worlds
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.1
+appVersion: "0.1.1"
 home: https://github.com/petzkod5/rsdragonwilds-helm
 sources:
   - https://github.com/petzkod5/rsdragonwilds-helm
