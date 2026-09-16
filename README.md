@@ -1,14 +1,31 @@
-# rsdragonwilds-helm
+<p align="center">
+  <img src="docs/assets/rsdragonwilds-helm-banner.png" alt="rsdragonwilds-helm banner with a dragon and the Kubernetes logo">
+</p>
 
-Run one RuneScape Dragonwilds dedicated server per Helm release. The image extends Jagex's official `1.1.1` container and builds RSDWServerAPI `0.1.3` from pinned source against Steam Runtime Sniper. The chart persists the game, world saves, and mod state. An optional JSON exporter `v0.8.0` supplies Prometheus metrics.
+# RuneScape Dragonwilds Helm chart
 
-This is an unofficial community project. Game updates arrive through SteamCMD at startup, independently of the pinned container and mod versions.
+[![CI and tests](https://github.com/petzkod5/rsdragonwilds-helm/actions/workflows/ci.yml/badge.svg)](https://github.com/petzkod5/rsdragonwilds-helm/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/petzkod5/rsdragonwilds-helm?display_name=tag)](https://github.com/petzkod5/rsdragonwilds-helm/releases/latest)
+[![License](https://img.shields.io/github/license/petzkod5/rsdragonwilds-helm)](LICENSE)
+[![Container](https://img.shields.io/badge/GHCR-public-2496ED?logo=github)](https://github.com/petzkod5/rsdragonwilds-helm/pkgs/container/rsdragonwilds-server)
+
+Run one RuneScape Dragonwilds dedicated server per Helm release. The container extends Jagex's official image with [RSDWServerAPI](https://github.com/dkoz/RSDWServerAPI). The chart adds persistent worlds, optional save import, and Prometheus metrics.
+
+This is an unofficial community project. SteamCMD updates the game at startup, independent of the pinned container and mod versions.
+
+## Requirements
+
+- Helm 3 or 4.
+- A Kubernetes cluster with an `amd64` worker node.
+- A storage class or an existing persistent volume claim.
+- A UDP load balancer or another way to expose the game port.
+- An EOS player ID from the Dragonwilds game settings.
+
+The default persistent volume claim requests 40 GiB.
 
 ## Install a server
 
-Use an amd64 Kubernetes node, a storage class or existing PVC, and a UDP load balancer. Choose CPU, memory, and disk capacity for your server. The default PVC requests 40Gi. Helm 3 or 4 supports the OCI chart.
-
-Create a namespace and a persistent bearer-token Secret. Helm never generates or replaces this token.
+Create a namespace and an API token. The chart reads the token from an existing Secret and never generates or replaces it.
 
 ```sh
 kubectl create namespace dragonwilds
@@ -16,7 +33,7 @@ kubectl -n dragonwilds create secret generic rsdw-api \
   --from-literal=token="$(openssl rand -hex 32)"
 ```
 
-Create `my-values.yaml`. Find your EOS player ID in the game's settings.
+Create `my-values.yaml`.
 
 ```yaml
 server:
@@ -29,65 +46,76 @@ api:
     name: rsdw-api
 ```
 
-After the first public release is available, install it.
+Install the chart.
 
 ```sh
 helm upgrade --install game oci://ghcr.io/petzkod5/charts/rsdragonwilds \
-  --version 0.1.0 --namespace dragonwilds -f my-values.yaml
+  --version 0.1.0 \
+  --namespace dragonwilds \
+  --values my-values.yaml
+```
+
+Watch startup and find the server address.
+
+```sh
 kubectl -n dragonwilds logs -f deployment/game-rsdragonwilds -c server
 kubectl -n dragonwilds get service game-rsdragonwilds
 ```
 
-For a checkout before publication, substitute `./charts/rsdragonwilds` for the OCI URL and omit `--version`. Set `image.repository` and `image.tag` to an image available to your cluster.
+SteamCMD downloads the game before startup. The readiness probe waits for the API's `engineReady` flag and does not restart a slow download. Connect with the Service's external numeric IP and UDP port. Public discovery depends on the game and Epic Online Services.
 
-Steam downloads the game before startup. Readiness waits for the API's `engineReady` flag and does not restart a slow download. Use the Service's external numeric IP and UDP port to connect. Public server discovery depends on the game and EOS services.
+If no save is present, the server creates a world. The persistent volume stores saves at `/home/steam/rsdw-dedicated/RSDragonwilds/Saved/SaveGames`.
 
-With no imported save, the game generates a world. Saves live at `/home/steam/rsdw-dedicated/RSDragonwilds/Saved/SaveGames`, with a capital `G` in `Games`.
+To install from a checkout, replace the OCI URL with `./charts/rsdragonwilds` and omit `--version`. Set `image.repository` and `image.tag` to an image that your cluster can pull.
 
-## Configure the server
+## Configure the chart
 
-[values.yaml](charts/rsdragonwilds/values.yaml) lists every setting and default. The schema rejects unknown chart keys and invalid port types. Use quoted strings in `server.env`.
+[values.yaml](charts/rsdragonwilds/values.yaml) contains every setting and default. [values.schema.json](charts/rsdragonwilds/values.schema.json) rejects unknown chart keys and invalid values. Quote all values in `server.env`.
 
-| Values | Effect |
+| Value | Purpose |
 | --- | --- |
-| `image.repository`, `tag`, `digest`, `pullPolicy` | Select the server image. Digest overrides tag. An empty tag uses `Chart.appVersion`. |
+| `image.repository`, `tag`, `digest`, `pullPolicy` | Select the server image. A digest overrides the tag. An empty tag uses `Chart.appVersion`. |
 | `server.port` | Set the game container port and `RSDW_PORT`. |
-| `server.env`, `server.extraEnv` | Upstream environment map and Kubernetes EnvVar overrides. An override replaces the same map key once. |
-| `config.dedicatedServerIni` | Complete optional INI template. Empty uses the upstream template. |
-| `persistence.existingClaim`, `size`, `storageClass`, `accessModes`, `retain` | Existing or chart-created data volume. `null` storage class uses the cluster default; `""` requests no class. |
-| `saveSeed.existingClaim`, `path` | Initial import from a separate read-only PVC. |
-| `api.enabled`, `port`, `bearerTokenSecret.name`, `bearerTokenSecret.key` | Localhost REST listener and existing token Secret. |
-| `api.logging.enabled`, `api.logging.verbose` | Mod logging flags. |
-| `metrics.enabled`, `metrics.image`, `metrics.resources` | Optional exporter container, pinned version, and resources. Requires API. |
-| `metrics.serviceMonitor.enabled`, `interval`, `labels` | Prometheus Operator discovery. The CRD must already exist. |
-| `metrics.networkPolicy.enabled`, `allowedPeers` | Restrict exporter ingress to native NetworkPolicyPeer selectors. An empty list denies all exporter ingress. Game UDP stays reachable. |
-| `service.type`, `port`, `nodePort`, `annotations` | External game Service. `port` is the external port; its target is `server.port`. |
-| `resources`, `nodeSelector`, `tolerations`, `affinity` | Server resource and placement settings. Only amd64 is built. |
-| `imagePullSecrets` | Kubernetes registry credential references. Public GHCR packages need none. |
-| `podAnnotations`, `podLabels` | Extra metadata. Selector labels are reserved. |
-| `securityContext`, `containerSecurityContext` | Pod and container security settings. The default UID, GID, and filesystem group are 1000. |
+| `server.env`, `server.extraEnv` | Set upstream variables and Kubernetes `EnvVar` overrides. An override replaces the matching map entry. |
+| `config.dedicatedServerIni` | Replace the complete upstream INI template. |
+| `persistence.existingClaim`, `size`, `storageClass`, `accessModes`, `retain` | Configure the data volume. `null` uses the cluster's default storage class. `""` requests no storage class. |
+| `saveSeed.existingClaim`, `path` | Import one save from a separate read-only persistent volume claim. |
+| `api.enabled`, `port`, `bearerTokenSecret.name`, `bearerTokenSecret.key` | Configure the localhost REST API and its existing token Secret. |
+| `api.logging.enabled`, `api.logging.verbose` | Set the mod's logging options. |
+| `metrics.enabled`, `metrics.image`, `metrics.resources` | Configure the optional metrics exporter. The exporter requires the REST API. |
+| `metrics.serviceMonitor.enabled`, `interval`, `labels` | Configure Prometheus Operator discovery. The CustomResourceDefinition must already exist. |
+| `metrics.networkPolicy.enabled`, `allowedPeers` | Limit exporter ingress. An empty peer list denies all exporter ingress. Game UDP remains reachable. |
+| `service.type`, `port`, `nodePort`, `annotations` | Configure the external game Service. `port` targets `server.port`. |
+| `resources`, `nodeSelector`, `tolerations`, `affinity` | Configure resources and Pod placement. The image supports only `amd64`. |
+| `imagePullSecrets` | Add registry credentials. Public GHCR packages need none. |
+| `podAnnotations`, `podLabels` | Add Pod metadata. Selector labels are reserved. |
+| `securityContext`, `containerSecurityContext` | Configure Pod and container security. The default UID, GID, and filesystem group are 1000. |
 
-Each release owns one world and runs one replica with `Recreate`. Do not share its PVC with another running release or force-start a replacement while the old process still writes. Use a storage driver that honors `fsGroup`, or pre-provision writable storage for UID 1000. Disabling nonroot execution or changing volume ownership can prevent the game from starting.
+Each release owns one world and one replica. The Deployment uses `Recreate`. Do not share its persistent volume claim with another running release. Use storage that honors `fsGroup`, or provide a volume writable by UID 1000.
 
-### Official environment variables
+### Server environment variables
 
-| Variable | Default in this chart | Purpose |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `RSDW_OWNER_ID` | Required | Owner's EOS player ID. |
-| `RSDW_PORT` | `7777` | Chart-owned. Set `server.port`. |
-| `RSDW_SERVER_NAME` | `Dragonwilds` | Server creator name displayed by the game. |
-| `RSDW_WORLD_NAME` | `World` | Name used for a newly generated world. |
-| `RSDW_PASSWORD` | Empty | World password. Empty allows passwordless connections. |
-| `RSDW_ADMINS` | Empty | Comma-separated administrator EOS IDs. |
-| `RSDW_ADMIN_PASSWORD` | Empty | Server management password. Set it through a Secret. |
-| `RSDW_ADDITIONAL_ARGS` | Empty | Upstream command-line argument string with quoted argument support. |
-| `RSDW_AUTO_STOP_ON_UPDATE` | `false` | Upstream opt-in stop-on-update behavior. See limitations below. |
-| `DEBUG` | `0` | `1` SteamCMD, `2` game logging, `3` both. |
-| `STEAMAPPVALIDATE` | `0` | Set `1` to validate game files on startup. |
+| `RSDW_OWNER_ID` | Required | Set the owner's EOS player ID. |
+| `RSDW_PORT` | `7777` | Chart-owned. Set `server.port` instead. |
+| `RSDW_SERVER_NAME` | `Dragonwilds` | Set the name shown by the game. |
+| `RSDW_WORLD_NAME` | `World` | Set the name for a new world. |
+| `RSDW_PASSWORD` | Empty | Set the world password. Empty allows passwordless connections. |
+| `RSDW_ADMINS` | Empty | Set a comma-separated list of administrator EOS IDs. |
+| `RSDW_ADMIN_PASSWORD` | Empty | Set the server management password. Use a Secret reference. |
+| `RSDW_ADDITIONAL_ARGS` | Empty | Pass upstream command-line arguments. Quoted arguments are supported. |
+| `RSDW_AUTO_STOP_ON_UPDATE` | `false` | Enable upstream stop-on-update behavior. Read [Known limits](#known-limits) before use. |
+| `DEBUG` | `0` | Set `1` for SteamCMD logs, `2` for game logs, or `3` for both. |
+| `STEAMAPPVALIDATE` | `0` | Set `1` to validate game files at startup. |
 
-The upstream legacy alias `RSDW_ADDITIONAL_ARGUMENTS` remains available through `server.env`, but prefer `RSDW_ADDITIONAL_ARGS`. The upstream diagnostic `STEAMCMD_SPEW` and developer `DEVBUILD_PRESIGNED_URL` can also be supplied there. GameLift is outside this chart's deployment model. `GAMELIFT`, `STEAMAPPDIR`, `LD_PRELOAD`, and `RSDWAPI_*` are reserved alongside `RSDW_PORT`.
+The upstream legacy name `RSDW_ADDITIONAL_ARGUMENTS` remains available through `server.env`. Prefer `RSDW_ADDITIONAL_ARGS`. You can also set `STEAMCMD_SPEW` and `DEVBUILD_PRESIGNED_URL` there.
 
-Explicit empty strings stay empty. Do not use upstream's `random` password option for a persistent installation; it changes on restart and prints passwords in logs. Values and inline INI text are stored in Helm release metadata and ConfigMaps. Use `extraEnv` Secret references for credentials.
+The chart reserves `GAMELIFT`, `STEAMAPPDIR`, `LD_PRELOAD`, `RSDWAPI_*`, and `RSDW_PORT`. GameLift is outside this chart's deployment model.
+
+Explicit empty strings remain empty. Do not use the upstream `random` password option for persistent servers. The password changes on each restart and appears in logs.
+
+Helm stores values and inline INI text in release metadata and ConfigMaps. Put credentials in Secret references under `server.extraEnv`.
 
 ```yaml
 server:
@@ -104,11 +132,11 @@ server:
           key: admin-password
 ```
 
-Create `game-passwords` in the release namespace using your secret-management tool or `kubectl create secret generic --from-file`. Secret values used in INI fields must contain no newlines. Token values must be nonempty bearer tokens; hexadecimal output from `openssl rand -hex 32` works. Restart the Deployment after changing external Secrets so the INI and API settings use the new values.
+Create `game-passwords` in the release namespace with your secret-management tool or `kubectl create secret generic --from-file`. Values used in INI fields must not contain newlines. Restart the Deployment after you change an external Secret.
 
-### Supply a full INI template
+### Replace the INI template
 
-Jagex runs `envsubst` on this template at startup. It replaces the entire default template; include every setting you need. Repeated keys and Unreal array syntax stay intact. No INI parser or merge runs here.
+Jagex runs `envsubst` on the configured template at startup. The chart replaces the full default template. Include every setting that your server needs.
 
 ```yaml
 config:
@@ -125,11 +153,21 @@ config:
     OwnerId=${RSDW_OWNER_ID}
 ```
 
-The rendered file is `RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini` under the data volume. INI changes trigger a rollout. Substitution does not escape values or validate game-specific keys. Unknown game settings may be ignored. Player count is not an official environment variable; `server.env.RSDW_ADDITIONAL_ARGS` can pass Unreal overrides such as `-ini:Game:[/Script/Engine.GameSession]:MaxPlayers=12`. Support for such overrides depends on the game build.
+The rendered file lives at `RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini` on the data volume. A template change rolls the Deployment. The substitution does not escape values or validate game-specific keys.
 
-## Import or restore a world
+Player count has no official environment variable. Pass an Unreal override through `RSDW_ADDITIONAL_ARGS`.
 
-Place your `.sav` on a separate PVC in the same namespace, then configure its relative path.
+```yaml
+server:
+  env:
+    RSDW_ADDITIONAL_ARGS: '-ini:Game:[/Script/Engine.GameSession]:MaxPlayers=12'
+```
+
+The game build determines whether an Unreal override works.
+
+## Import a world
+
+Put a `.sav` file on a separate persistent volume claim in the same namespace. Configure its relative path.
 
 ```yaml
 saveSeed:
@@ -137,19 +175,41 @@ saveSeed:
   path: worlds/my-world.sav
 ```
 
-The init container mounts that PVC read-only and copies the save into `RSDragonwilds/Saved/SaveGames`. It rejects absolute paths, traversal, and symlinks escaping the source volume. A temporary file and atomic rename protect interrupted copies. Any existing save or completed-import marker prevents another import. A missing requested source fails startup. The source PVC must support attachment to the selected node.
+The init container mounts the source volume read-only and copies the save into `RSDragonwilds/Saved/SaveGames`. It rejects absolute paths, path traversal, and symlinks that escape the source volume. A temporary file and atomic rename protect interrupted copies.
 
-For example, populate a new source PVC through a temporary utility Pod that mounts it at `/seed`. Copy the file with `kubectl cp ./my-world.sav dragonwilds/UTILITY_POD:/seed/my-world.sav`. Stop that Pod before the server uses the claim. The source files must be readable by UID 1000.
+The import runs only when no save or completed-import marker exists. A missing source file stops startup. The source volume must attach to the selected node and allow reads by UID 1000.
 
-Initial import is not restore. To restore over a current world, first back up the current data and stop the server with `kubectl -n dragonwilds scale deployment/game-rsdragonwilds --replicas=0`. Wait for its Pod to terminate. Attach the data PVC to a maintenance Pod, move existing saves and `.seed-complete` to a backup location, and copy the chosen save into `SaveGames`. Detach the maintenance Pod and restore one replica. Do not edit a live save. Helm's next upgrade also restores its fixed replica count of one.
+To populate a source volume, mount it at `/seed` in a temporary utility Pod. Copy the save with `kubectl cp`, then remove the utility Pod before the server uses the volume.
 
-Chart-created PVCs survive `helm uninstall` by default. Reattach one with `persistence.existingClaim`. Delete a retained PVC explicitly only after preserving the world elsewhere. Setting `persistence.retain=false` allows Helm uninstall to delete the claim; the storage class's reclaim policy then controls the underlying data.
+```sh
+kubectl cp ./my-world.sav dragonwilds/UTILITY_POD:/seed/my-world.sav
+```
 
-## Scrape metrics
+### Restore an existing world
 
-REST listens on `127.0.0.1` inside the Pod. No REST or RCON Service is created. The mod writes its complete settings on startup under `/home/steam/rsdw-dedicated/rsdwapi`, alongside persistent bans and logs. RCON and Discord remain disabled.
+The initial import does not overwrite a world. To restore a save, first back up the current data.
 
-The exporter exposes a ClusterIP Service at `game-rsdragonwilds-metrics:7979`. It accepts arbitrary probe targets and holds a management API credential. Enable its NetworkPolicy and limit access to trusted Prometheus Pods. Your CNI must enforce NetworkPolicy.
+1. Scale the Deployment to zero.
+2. Wait for its Pod to stop.
+3. Mount the data volume in a maintenance Pod.
+4. Move the existing saves and `.seed-complete` marker to a backup location.
+5. Copy the chosen save into `SaveGames`.
+6. Remove the maintenance Pod.
+7. Scale the Deployment to one.
+
+```sh
+kubectl -n dragonwilds scale deployment/game-rsdragonwilds --replicas=0
+```
+
+Do not edit a live save. The next Helm upgrade restores the chart's fixed replica count of one.
+
+Chart-created persistent volume claims survive `helm uninstall` by default. Reattach one with `persistence.existingClaim`. If you set `persistence.retain=false`, Helm can delete the claim during uninstall. The storage class reclaim policy then controls the underlying volume.
+
+## Monitor the server
+
+RSDWServerAPI listens on `127.0.0.1` inside the Pod. The chart exposes no REST or RCON Service. The mod stores its settings, bans, and logs under `/home/steam/rsdw-dedicated/rsdwapi`. RCON and Discord integrations remain disabled.
+
+The exporter exposes a ClusterIP Service at `game-rsdragonwilds-metrics:7979`. Enable its NetworkPolicy because the exporter accepts probe targets and holds an API credential. Your cluster network plugin must enforce NetworkPolicy.
 
 ```yaml
 metrics:
@@ -168,7 +228,7 @@ metrics:
       release: prometheus
 ```
 
-Adjust selectors and ServiceMonitor labels for your Prometheus installation. Without Prometheus Operator, add both jobs below. The localhost target refers to the exporter's Pod, not Prometheus.
+Without Prometheus Operator, configure both probe jobs. The localhost target refers to the exporter's Pod.
 
 ```yaml
 scrape_configs:
@@ -190,15 +250,21 @@ scrape_configs:
 
 | Metric | Meaning |
 | --- | --- |
-| `rsdw_engine_ready` | API engine readiness, 0 or 1. |
+| `rsdw_engine_ready` | API engine readiness, either 0 or 1. |
 | `rsdw_uptime_seconds` | Mod process uptime in seconds. |
 | `rsdw_players` | Player count reported by the REST API. |
 
-Scraping `/metrics` alone only collects exporter metrics. HTTP failures return a failed probe. JSON extraction errors in upstream exporter v0.8.0 omit the affected metric and can still return HTTP 200. They never become a zero player count. Alert on both `up == 0` and missing required series, for example `absent_over_time(rsdw_players{job="dragonwilds-players"}[5m])`. Add equivalent absence checks for health metrics. Do not fill absent player metrics with zero in dashboards.
+Scraping `/metrics` collects only exporter metrics. HTTP failures return a failed probe. JSON extraction errors in exporter `v0.8.0` omit the affected metric but can return HTTP 200. Alert on both `up == 0` and missing series.
 
-The API can report an empty roster after an internal read failure; the exporter cannot distinguish that case from zero players. It supplies no verified tick rate, tick latency, CPU, memory, or disk metrics. Use Kubernetes infrastructure metrics for resource use.
+```promql
+absent_over_time(rsdw_players{job="dragonwilds-players"}[5m])
+```
 
-## Build and verify
+Do not replace a missing player metric with zero. The API can report an empty roster after an internal read failure, and the exporter cannot distinguish that response from zero players. Use Kubernetes infrastructure metrics for CPU, memory, disk, and network data.
+
+## Develop and test
+
+Install the local test dependency, then run the checks.
 
 ```sh
 python3 -m pip install PyYAML==6.0.3
@@ -208,47 +274,44 @@ bash tests/runtime.sh rsdragonwilds-server:dev
 python3 tests/metrics.py
 ```
 
-`tests/check.sh` exercises launcher patching, repeated startup preparation, save import, rejected paths, Helm variants, and invalid values. It runs ShellCheck when installed. `tests/runtime.sh` verifies the final image's library dependencies, UID, and installed hook without preloading the mod into a shell. On Linux, `tests/metrics.py` runs the real exporter against authenticated HTTP fixtures, including HTTP and malformed-JSON failures.
+`tests/check.sh` checks launcher patches, repeated startup preparation, save import, rejected paths, Helm variants, and invalid values. It runs ShellCheck when available. `tests/runtime.sh` checks the final image's libraries, UID, and installed hook. `tests/metrics.py` runs the exporter against authenticated HTTP fixtures on Linux.
 
-The launcher fixture comes from an actual current Steam download. The official image booted and created `SaveGames/silvarea.sav`. The derived image then booted the same game payload, reported `engineReady: true`, returned the player-count response, and mapped `librsdwapi.so` only in `RSDragonwildsServer-Linux-Shipping`. A restart loaded the existing world successfully, and the container stopped within one second. RSDWServerAPI tag `0.1.3` still reports its internal version as `0.1.1`; this is an upstream version-string mismatch.
+The project has also passed a minimal single-node kind test with an 8 MiB memory request. The test covered Deployment availability, persistent writes across a `Recreate` rollout, UID 1000, disabled service-account token mounting, and persistent volume claim retention after uninstall.
 
-A minimal single-node kind test also passed with an 8 MiB memory request: the Deployment became available, the PVC bound and stayed writable across a `Recreate` rollout, the Pod ran as UID 1000 without a service-account token, and the retained PVC survived uninstall. Player joins and imported-world selection still require an interactive game client and a real seed PVC.
-
-For live verification, install the chart into a disposable namespace with a test owner ID and dedicated PVC. Wait for readiness, then port-forward the metrics Service and query both probes.
-
-```sh
-kubectl -n dragonwilds port-forward service/game-rsdragonwilds-metrics 7979:7979
-curl --fail --get http://127.0.0.1:7979/probe \
-  --data-urlencode module=health --data-urlencode target=http://127.0.0.1:8080/api/health
-curl --fail --get http://127.0.0.1:7979/probe \
-  --data-urlencode module=players --data-urlencode target=http://127.0.0.1:8080/api/players
-```
-
-Inspect `/proc/*/maps` inside the server container to verify that only `RSDragonwildsServer-Linux-Shipping` maps `librsdwapi.so`. Join and leave the server to check player counts. Restart the Pod and verify world progress. Repeat with an imported test save, then change the seed and verify that existing progress wins. Check termination logs and saved progress before treating shutdown behavior as verified.
-
-The image build rejects unexpected entrypoint structure. Startup rejects unknown downloaded launcher structure. Steam can update the game independently and break the mod's memory offsets. Upstream `1.1.1` also has known update-detection and process-monitoring limitations; do not rely on `RSDW_AUTO_STOP_ON_UPDATE` or prompt restart after a game crash without testing your game build. With API disabled, the Pod has no game readiness probe.
+Interactive verification still requires a game client. Join the server, confirm player metrics, restart the Pod, and confirm world progress. Repeat the test with an imported save before you depend on restore behavior.
 
 ## Publish a release
 
-Set both `version` and `appVersion` in `charts/rsdragonwilds/Chart.yaml` to the release version. Run the checks, commit, then push a matching tag such as `v0.1.0`.
+Set `version` and `appVersion` in [Chart.yaml](charts/rsdragonwilds/Chart.yaml) to the release version. Run the checks, commit the change, and push a matching tag.
 
 ```sh
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Actions validates the chart, builds the image, checks its dependencies, and publishes both artifacts using `GITHUB_TOKEN` with `packages:write`.
+GitHub Actions validates the chart, builds the image, checks its dependencies, and publishes both artifacts.
 
-- Image: `ghcr.io/petzkod5/rsdragonwilds-server:0.1.0`
-- Chart: `oci://ghcr.io/petzkod5/charts/rsdragonwilds`, version `0.1.0`
+- Container image: `ghcr.io/petzkod5/rsdragonwilds-server:0.1.0`
+- Helm chart: `oci://ghcr.io/petzkod5/charts/rsdragonwilds`, version `0.1.0`
 
-On the first publication, open each package's GitHub settings and set visibility to **Public**. A public repository does not automatically make GHCR packages public. If an existing package rejects the workflow, grant this repository Actions access in the package settings. Verify anonymous image and chart pulls from a clean client before announcing a release.
+Verify anonymous pulls before you announce a release.
 
 ```sh
 docker pull ghcr.io/petzkod5/rsdragonwilds-server:0.1.0
 helm pull oci://ghcr.io/petzkod5/charts/rsdragonwilds --version 0.1.0
 ```
 
-There is no single global Helm storage repository. GHCR hosts the OCI chart. For public discovery, create an [Artifact Hub](https://artifacthub.io/) account and register a Helm repository with URL `oci://ghcr.io/petzkod5/charts/rsdragonwilds`. Registration and ownership verification are manual account operations. Follow the [Artifact Hub Helm repository documentation](https://artifacthub.io/docs/topics/repositories/helm-charts/). `helm repo add` does not apply to this OCI distribution.
+GHCR hosts the OCI chart. `helm repo add` does not apply. For public discovery, register the chart with [Artifact Hub](https://artifacthub.io/docs/topics/repositories/helm-charts/).
 
-Our code uses the MIT license. [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) retains Jagex and RSDWServerAPI notices and links to SteamCMD's separate terms.
+## Known limits
+
+- Steam can update the game independently and break the mod's memory offsets.
+- The image build rejects an unexpected upstream entrypoint. Startup rejects an unexpected downloaded launcher.
+- Jagex image `1.1.1` has known update-detection and process-monitoring limits. Test `RSDW_AUTO_STOP_ON_UPDATE` and crash recovery against your game build.
+- The Pod has no game readiness probe when the API is disabled.
+- RSDWServerAPI tag `0.1.3` reports its internal version as `0.1.1`.
+- The exporter supplies no verified tick rate or tick latency.
+
+## License
+
+This repository uses the [MIT license](LICENSE). [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) contains the Jagex and RSDWServerAPI notices and links to SteamCMD's separate terms.
