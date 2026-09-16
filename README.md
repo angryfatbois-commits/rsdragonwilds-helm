@@ -282,14 +282,13 @@ Interactive verification still requires a game client. Join the server, confirm 
 
 ## Publish a release
 
-Set `version` and `appVersion` in [Chart.yaml](charts/rsdragonwilds/Chart.yaml) to the release version. Run the checks, commit the change, and push a matching tag.
+Push a Conventional Commit to `main`. GitHub Actions runs CI and semantic-release.
 
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
+- `fix` creates a patch release.
+- `feat` creates a minor release.
+- `!` or `BREAKING CHANGE:` creates a major release.
 
-GitHub Actions validates the chart, builds the image, checks its dependencies, and publishes both artifacts.
+Semantic-release updates `Chart.yaml`, creates the `v` tag and GitHub release, builds the image, and publishes both artifacts. Do not edit the chart version or push release tags manually.
 
 - Container image: `ghcr.io/petzkod5/rsdragonwilds-server:0.1.0`
 - Helm chart: `oci://ghcr.io/petzkod5/charts/rsdragonwilds`, version `0.1.0`
