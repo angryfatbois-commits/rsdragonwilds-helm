@@ -290,14 +290,14 @@ Push a Conventional Commit to `main`. GitHub Actions runs CI and semantic-releas
 
 Semantic-release updates `Chart.yaml`, creates the `v` tag and GitHub release, builds the image, and publishes both artifacts. Do not edit the chart version or push release tags manually.
 
-- Container image: `ghcr.io/petzkod5/rsdragonwilds-server:0.1.0`
-- Helm chart: `oci://ghcr.io/petzkod5/charts/rsdragonwilds`, version `0.1.0`
+- Container image: `ghcr.io/petzkod5/rsdragonwilds-server:0.1.1`
+- Helm chart: `oci://ghcr.io/petzkod5/charts/rsdragonwilds`, version `0.1.1`
 
 Verify anonymous pulls before you announce a release.
 
 ```sh
-docker pull ghcr.io/petzkod5/rsdragonwilds-server:0.1.0
-helm pull oci://ghcr.io/petzkod5/charts/rsdragonwilds --version 0.1.0
+docker pull ghcr.io/petzkod5/rsdragonwilds-server:0.1.1
+helm pull oci://ghcr.io/petzkod5/charts/rsdragonwilds --version 0.1.1
 ```
 
 GHCR hosts the OCI chart. `helm repo add` does not apply. For public discovery, register the chart with [Artifact Hub](https://artifacthub.io/docs/topics/repositories/helm-charts/).
