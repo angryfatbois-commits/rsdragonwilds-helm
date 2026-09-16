@@ -4,12 +4,12 @@ launcher=${1:-${STEAMAPPDIR:?STEAMAPPDIR required}/RSDragonwildsServer.sh}
 original="\"\$UE_PROJECT_ROOT/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping\" RSDragonwilds \"\$@\""
 patched='env LD_PRELOAD=/opt/rsdwapi/librsdwapi.so '"$original"
 invocations=$(sed 's/[[:blank:]]*$//' "$launcher" | grep -E '^(env LD_PRELOAD=[^ ]+ )?".*RSDragonwildsServer-Linux-Shipping' || true)
-[[ $(grep -c 'RSDragonwildsServer-Linux-Shipping' "$launcher" || true) == 2 ]] &&
-    grep -Fxq "chmod +x \"\$UE_PROJECT_ROOT/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping\"" "$launcher" &&
-    [[ $invocations == "$original" || $invocations == "$patched" ]] || {
+if [[ $(grep -c 'RSDragonwildsServer-Linux-Shipping' "$launcher" || true) != 2 ]] ||
+    ! grep -Fxq "chmod +x \"\$UE_PROJECT_ROOT/RSDragonwilds/Binaries/Linux/RSDragonwildsServer-Linux-Shipping\"" "$launcher" ||
+    [[ $invocations != "$original" && $invocations != "$patched" ]]; then
     echo 'Unsupported Dragonwilds launcher: expected one known shipping executable invocation' >&2
     exit 1
-}
+fi
 if [[ ${RSDWAPI_ENABLED:-true} == false ]]; then
     sed -i 's|^env LD_PRELOAD=/opt/rsdwapi/librsdwapi.so ||' "$launcher"
     exit 0
