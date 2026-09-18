@@ -9,6 +9,7 @@ for script in container/*.sh tests/*.sh; do bash -n "$script"; done
 if command -v shellcheck >/dev/null; then shellcheck container/*.sh tests/*.sh; fi
 cp tests/fixtures/entry.sh "$work/entry"
 bash container/patch-entrypoint.sh "$work/entry"
+grep -Fxq "    -Port=\"\${RSDW_PORT}\"" "$work/entry"
 cp "$work/entry" "$work/entry.once"
 bash container/patch-entrypoint.sh "$work/entry"
 cmp "$work/entry" "$work/entry.once"
