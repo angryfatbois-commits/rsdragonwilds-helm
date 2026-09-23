@@ -4,9 +4,9 @@ FROM registry.gitlab.steamos.cloud/steamrt/sniper/sdk@sha256:1c33c507bc75d012e77
 USER root
 WORKDIR /build
 COPY patches/rsdw-api-ticks.patch /tmp/rsdw-api-ticks.patch
-# RSDWServerAPI 0.1.3. Compile against Sniper's libc, not the release binary.
+# RSDWServerAPI, pinned past Dragonwilds 1.0's offset updates. Compile against Sniper's libc, not the release binary.
 RUN git init . && git remote add origin https://github.com/dkoz/RSDWServerAPI.git \
-    && git fetch --depth 1 origin 1bf3b918e780e5707decc122c3d77938949c3862 \
+    && git fetch --depth 1 origin 994a72092f77e9851797bbd6206c80a3ebb28e5f \
     && git checkout --detach FETCH_HEAD \
     && git apply --check /tmp/rsdw-api-ticks.patch \
     && git apply /tmp/rsdw-api-ticks.patch \

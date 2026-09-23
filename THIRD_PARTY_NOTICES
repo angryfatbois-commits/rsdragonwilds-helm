@@ -16,8 +16,8 @@ https://github.com/runescape/rsdw-dedicated/blob/v1.1.1/LICENSE.steamcmd
 The game downloads from Steam at startup and is not licensed by this repository.
 RuneScape and Dragonwilds are Jagex trademarks. This project is not affiliated with Jagex.
 
-RSDWServerAPI 0.1.3
-https://github.com/dkoz/RSDWServerAPI/tree/1bf3b918e780e5707decc122c3d77938949c3862
+RSDWServerAPI (pinned past patch 1.0 offset update)
+https://github.com/dkoz/RSDWServerAPI/tree/994a72092f77e9851797bbd6206c80a3ebb28e5f
 
 MIT License
 

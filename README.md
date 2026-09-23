@@ -313,7 +313,7 @@ GHCR hosts the OCI chart. `helm repo add` does not apply. For public discovery, 
 
 ## Tick telemetry
 
-The image applies [the API source patch](patches/rsdw-api-ticks.patch) to pinned RSDWServerAPI commit `1bf3b918e780e5707decc122c3d77938949c3862` before compilation. It adds authenticated `GET /api/metrics` to the existing API. No Unreal rebuild, shipped game-file changes, or additional runtime service is required.
+The image applies [the API source patch](patches/rsdw-api-ticks.patch) to pinned RSDWServerAPI commit `994a72092f77e9851797bbd6206c80a3ebb28e5f` before compilation. It adds authenticated `GET /api/metrics` to the existing API. No Unreal rebuild, shipped game-file changes, or additional runtime service is required.
 
 The startup wrapper measures completed `UDomGameEngine::Tick` calls and their elapsed execution time. Responses contain measured cadence, p50/p95/p99 durations, the actual window, sample count, and last-completion timestamp. Missing, warming, unsupported, or stale measurements remain null. Duration includes the nested engine/world tick and synchronous delegates, not the entire outer frame loop.
 
