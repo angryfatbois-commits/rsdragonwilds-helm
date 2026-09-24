@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG JAGEX_IMAGE=ghcr.io/runescape/rsdw-dedicated:1.1.1@sha256:2646cf9105f3113d89a1dfb0b1d2de7170bcae049e3ca8a264a26ed975bfe2d7
+ARG JAGEX_IMAGE=ghcr.io/runescape/rsdw-dedicated:2.0.0@sha256:c35701edb05619fd28bfb37856b6a323c10bc8aa6466fb57b3e1b232936294dc
 FROM registry.gitlab.steamos.cloud/steamrt/sniper/sdk@sha256:1c33c507bc75d012e77df5727f93b0d5b8c3f7c8d4142ba5f7a16882cc92e014 AS api-builder
 USER root
 WORKDIR /build

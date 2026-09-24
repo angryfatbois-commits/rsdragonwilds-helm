@@ -306,7 +306,7 @@ GHCR hosts the OCI chart. `helm repo add` does not apply. For public discovery, 
 
 - Steam can update the game independently and break the mod's memory offsets.
 - The image build rejects an unexpected upstream entrypoint. Startup rejects an unexpected downloaded launcher.
-- Jagex image `1.1.1` has known update-detection and process-monitoring limits. Test `RSDW_AUTO_STOP_ON_UPDATE` and crash recovery against your game build.
+- Jagex image `2.0.0` has known update-detection and process-monitoring limits. Test `RSDW_AUTO_STOP_ON_UPDATE` and crash recovery against your game build.
 - The Pod has no game readiness probe when the API is disabled.
 - RSDWServerAPI tag `0.1.3` reports its internal version as `0.1.1`.
 - Tick measurements require executable build ID `f9be766885c63969`. Unknown builds return unavailable measurements without installing the tick wrapper.
