@@ -309,7 +309,7 @@ GHCR hosts the OCI chart. `helm repo add` does not apply. For public discovery, 
 - Jagex image `1.1.1` has known update-detection and process-monitoring limits. Test `RSDW_AUTO_STOP_ON_UPDATE` and crash recovery against your game build.
 - The Pod has no game readiness probe when the API is disabled.
 - RSDWServerAPI tag `0.1.3` reports its internal version as `0.1.1`.
-- Tick measurements require executable build ID `3b4ce30aed886594`. Unknown builds return unavailable measurements without installing the tick wrapper.
+- Tick measurements require executable build ID `f9be766885c63969`. Unknown builds return unavailable measurements without installing the tick wrapper.
 
 ## Tick telemetry
 

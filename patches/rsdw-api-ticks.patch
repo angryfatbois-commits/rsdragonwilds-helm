@@ -112,9 +112,9 @@ index 79c75b0..c3687df 100644
 +time. `lastSampleAgeSeconds` uses the monotonic clock. C2 should preserve nulls,
 +use observation time for freshness, and never average percentiles across windows.
 +
-+The only supported profile is x86-64 ET_EXEC build ID `3b4ce30aed886594`, with
++The only supported profile is x86-64 ET_EXEC build ID `f9be766885c63969`, with
 +zero load bias. The actual dedicated object uses `_ZTV14UDomGameEngine` at
-+`0x22520f8`, address point `0x2252108`. Slot 98 at `0x2252418` must contain
++`0x22520b8`, address point `0x22520c8`. Slot 98 at `0x22523d8` must contain
 +`0x9d2eab0`. Installation validates the full build ID, mapped ELF headers, exact
 +entry/dispatch/base-call/world-call/return bytes, private page permissions, and
 +that GEngine at `0xdfb9af0` is still null. An executable preinit array is rejected.
@@ -216,11 +216,11 @@ index 0000000..be98805
 +namespace TickMetrics {
 +namespace {
 +
-+constexpr uintptr_t kSlot = 0x2252418;
++constexpr uintptr_t kSlot = 0x22523d8;
 +constexpr uintptr_t kTick = 0x9d2eab0;
-+constexpr uintptr_t kAddressPoint = 0x2252108;
++constexpr uintptr_t kAddressPoint = 0x22520c8;
 +constexpr uintptr_t kGEngine = 0xdfb9af0;
-+constexpr uint8_t kBuildId[] = {0x3b, 0x4c, 0xe3, 0x0a, 0xed, 0x88, 0x65, 0x94};
++constexpr uint8_t kBuildId[] = {0xf9, 0xbe, 0x76, 0x68, 0x85, 0xc6, 0x39, 0x69};
 +constexpr uint8_t kEntry[] = {0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55,
 +                            0x41, 0x54, 0x53, 0x50};
 +constexpr uint8_t kDispatch[] = {0xff, 0x90, 0x10, 0x03, 0x00, 0x00};
