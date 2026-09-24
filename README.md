@@ -4,10 +4,10 @@
 
 # RuneScape Dragonwilds Helm chart
 
-[![CI and tests](https://github.com/petzkod5/rsdragonwilds-helm/actions/workflows/ci.yml/badge.svg)](https://github.com/petzkod5/rsdragonwilds-helm/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/petzkod5/rsdragonwilds-helm?display_name=tag)](https://github.com/petzkod5/rsdragonwilds-helm/releases/latest)
-[![License](https://img.shields.io/github/license/petzkod5/rsdragonwilds-helm)](LICENSE)
-[![Container](https://img.shields.io/badge/GHCR-public-2496ED?logo=github)](https://github.com/petzkod5/rsdragonwilds-helm/pkgs/container/rsdragonwilds-server)
+[![CI and tests](https://github.com/angryfatbois-commits/rsdragonwilds-helm/actions/workflows/ci.yml/badge.svg)](https://github.com/angryfatbois-commits/rsdragonwilds-helm/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/angryfatbois-commits/rsdragonwilds-helm?display_name=tag)](https://github.com/angryfatbois-commits/rsdragonwilds-helm/releases/latest)
+[![License](https://img.shields.io/github/license/angryfatbois-commits/rsdragonwilds-helm)](LICENSE)
+[![Container](https://img.shields.io/badge/GHCR-public-2496ED?logo=github)](https://github.com/angryfatbois-commits/rsdragonwilds-helm/pkgs/container/rsdragonwilds-server)
 
 Run one RuneScape Dragonwilds dedicated server per Helm release. The container extends Jagex's official image with [RSDWServerAPI](https://github.com/dkoz/RSDWServerAPI). The chart adds persistent worlds, optional save import, and Prometheus metrics.
 
@@ -49,7 +49,7 @@ api:
 Install the chart.
 
 ```sh
-helm upgrade --install game oci://ghcr.io/petzkod5/charts/rsdragonwilds \
+helm upgrade --install game oci://ghcr.io/angryfatbois-commits/charts/rsdragonwilds \
   --version 0.1.0 \
   --namespace dragonwilds \
   --values my-values.yaml
@@ -290,14 +290,14 @@ Push a Conventional Commit to `main`. GitHub Actions runs CI and semantic-releas
 
 Semantic-release updates `Chart.yaml`, creates the `v` tag and GitHub release, builds the image, and publishes both artifacts. Do not edit the chart version or push release tags manually.
 
-- Container image: `ghcr.io/petzkod5/rsdragonwilds-server:0.1.1`
-- Helm chart: `oci://ghcr.io/petzkod5/charts/rsdragonwilds`, version `0.1.1`
+- Container image: `ghcr.io/angryfatbois-commits/rsdragonwilds-server:0.1.1`
+- Helm chart: `oci://ghcr.io/angryfatbois-commits/charts/rsdragonwilds`, version `0.1.1`
 
 Verify anonymous pulls before you announce a release.
 
 ```sh
-docker pull ghcr.io/petzkod5/rsdragonwilds-server:0.1.1
-helm pull oci://ghcr.io/petzkod5/charts/rsdragonwilds --version 0.1.1
+docker pull ghcr.io/angryfatbois-commits/rsdragonwilds-server:0.1.1
+helm pull oci://ghcr.io/angryfatbois-commits/charts/rsdragonwilds --version 0.1.1
 ```
 
 GHCR hosts the OCI chart. `helm repo add` does not apply. For public discovery, register the chart with [Artifact Hub](https://artifacthub.io/docs/topics/repositories/helm-charts/).

@@ -13,7 +13,7 @@ RUN git init . && git remote add origin https://github.com/dkoz/RSDWServerAPI.gi
     && make -j2 && make test
 
 FROM ${JAGEX_IMAGE}
-LABEL org.opencontainers.image.source="https://github.com/petzkod5/rsdragonwilds-helm" \
+LABEL org.opencontainers.image.source="https://github.com/angryfatbois-commits/rsdragonwilds-helm" \
       org.opencontainers.image.description="Dragonwilds dedicated server with RSDWServerAPI" \
       org.opencontainers.image.licenses="MIT AND BSD-3-Clause"
 USER root

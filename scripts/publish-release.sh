@@ -2,7 +2,7 @@
 set -euo pipefail
 
 version=${1:?release version is required}
-image=ghcr.io/petzkod5/rsdragonwilds-server
+image=ghcr.io/angryfatbois-commits/rsdragonwilds-server
 chart=charts/rsdragonwilds
 package_dir=dist
 
@@ -23,4 +23,4 @@ docker buildx build \
 
 mkdir -p "$package_dir"
 helm package "$chart" --destination "$package_dir"
-helm push "$package_dir/rsdragonwilds-$version.tgz" oci://ghcr.io/petzkod5/charts
+helm push "$package_dir/rsdragonwilds-$version.tgz" oci://ghcr.io/angryfatbois-commits/charts
